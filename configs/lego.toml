@@ -1,0 +1,28 @@
+expname = "lego"
+basedir = "./logs/"
+
+[dataset]
+    datadir = "./data/nerf_synthetic/lego"
+    white_bkgd = true
+
+[training]
+  chunk = 8192
+  lr_decay = 500
+  N_rand = 1024
+  N_iters = 50002
+  precrop_iters = 500
+  precrop_frac = 0.5
+  fewshot = 4
+  train_scene = [26, 86, 2, 55]
+ 
+[rendering]
+  use_viewdirs = true
+  N_samples = 64
+  N_importance = 128
+  near = 2.0
+  far = 6.0
+
+[entropy_loss]
+    use = true
+    N_entropy = 1024
+    entropy_ray_zvals_lambda = 1e-3

@@ -1,0 +1,82 @@
+expname = "base"
+basedir = "./logs/"
+
+[dataset]
+    datadir = "./data"
+    maskdir = ""
+    white_bkgd = false
+    half_res = false
+    
+[training]
+    netdepth = 8
+    netwidth = 256
+    netdepth_fine = 8
+    netwidth_fine = 256
+    N_rand = 4096
+    lr = 5e-4
+    lr_decay = 250
+    chunk = 32768
+    netchunk = 65536
+    ckpt = ""
+
+    i_print = 100
+    i_img = 500
+    i_weights = 10000
+    i_testset = 25000
+    i_video = 1000000
+
+    precrop_iters = 0
+    precrop_frac = 0.5
+    fewshot = 0
+    fewshot_seed = 0
+
+# Ray Entropy Minimization Loss
+[entropy_loss]
+    use = true
+    N_entropy = 100
+    entropy_log_scaling = false
+    entropy_ignore_smoothing = false
+    entropy_end_iter = -1
+    entropy_type = 'log2'
+    entropy_acc_threshold = 0.1
+    computing_entropy_all = false
+    entropy_ray_lambda = 1.0
+    entropy_ray_zvals_lambda = 1.0
+
+# Infomation Gain Reduction Loss
+[info_loss]
+    use = true
+    sampling_method = 'near_pose'
+    near_c2w_type = 'rot_from_origin'
+    near_c2w_rot = 5.0
+    near_c2w_trans = 0.1
+    pixel_range = 16
+    info_lambda = 1.0
+    activation = 'norm'
+    reduce_step_size = 5000
+    reduce_step_rate = 1.0
+    info_end_iter = -1
+   
+# rendering options
+[rendering]
+    N_samples = 64
+    N_importance = 0
+    perturb = true
+    use_viewdirs = false
+    i_embed = 0
+    multires = 10
+    multires_views = 4
+    raw_noise_std = 0.0
+
+    near = 2.0
+    far = 6.0
+
+[test]
+    render_only = false
+    eval_only = false
+    render_test = false
+    render_test_full = false
+    ckpt_render_iter = -1
+    render_test_ray = false
+    render_train = false
+    render_factor = 0
