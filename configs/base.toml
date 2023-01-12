@@ -16,8 +16,8 @@ basedir = "./logs/"
     lr = 5e-4
     lr_decay = 250000
     chunk = 32768
-    netchunk = 65536
-    evalchunk = 65536
+    netchunk = 196608
+    evalchunk = 196608
     ckpt = ""
 
     i_print = 100

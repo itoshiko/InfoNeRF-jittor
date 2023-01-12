@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import time
+import glob
 import jittor as jt
 import jittor.nn as nn
 from tqdm import tqdm
@@ -32,12 +33,19 @@ class Trainer:
         op_param = list(self.model.parameters()) + (list(self.model_fine.parameters()) if self.model_fine is not None else [])
         self.optimizer = jt.optim.Adam(params=op_param, lr=self.cfg['training']['lr'], betas=(0.9, 0.999))
         self.it_time = 0
+        self.load_ckpt()
+
+    def load_ckpt(self):
         if self.cfg['training']['ckpt'] != "":
-            self.model.load(os.path.join(self.cfg['training']['ckpt'], "model.pkl"))
-            print("Load model parameters")
+            all_model = glob.glob(os.path.join(self.cfg['training']['ckpt'], "model*.pkl"))
+            target = sorted(all_model)[-1]
+            self.model.load(target)
+            print(f"Load model parameters: {target}")
             if self.model_fine is not None:
-                self.model_fine.load(os.path.join(self.cfg['training']['ckpt'], "model_fine.pkl"))
-                print("Load fine model parameters")
+                all_model = glob.glob(os.path.join(self.cfg['training']['ckpt'], "model_fine*.pkl"))
+                target = sorted(all_model)[-1]
+                self.model_fine.load(target)
+                print(f"Load fine model parameters: {target}")
 
     def init_loss(self):
         if self.cfg['entropy_loss']['use']:
@@ -186,20 +194,35 @@ class Trainer:
                 rays_o, rays_d = ru.get_rays(render_h, render_w, focal, pose)
                 rays_o = rays_o.reshape((render_h * render_w, -1))
                 rays_d = rays_d.reshape((render_h * render_w, -1))
-                render_out = self.render_rays(
-                    rays_o, rays_d, self.cfg['rendering']['N_samples'], 
-                    self.cfg['rendering']['N_importance'], True)
-                render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
-                rgb = render_result['rgb_map']  # [h * w, 3]
-                rgb = rgb.reshape((render_h, render_w, 3))
-                render.append(rgb.permute(2, 0, 1))  # [3, h, w]
+
+                total_rays = render_h * render_w
+                group_size = self.cfg['training']['chunk']
+                group_num = (
+                    (total_rays // group_size) if (total_rays % group_size == 0) else (total_rays // group_size + 1))
+                if group_num == 0:
+                    group_num = 1
+                    group_size = total_rays
+
+                group_output = []
+                for gi in range(group_num):
+                    start = gi * group_size
+                    end = (gi + 1) * group_size
+                    end = (end if (end <= total_rays) else total_rays)
+                    render_out = self.render_rays(
+                        rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
+                        self.cfg['rendering']['N_importance'], True)
+                    render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
+                    group_output.append(render_result['rgb_map'])
+                image_rgb = jt.concat(group_output, 0)
+                image_rgb = image_rgb.reshape((render_h, render_w, 3))
+                render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
             return render
     
-    def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None):
+    def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
         if poses.ndim == 2:
             poses = poses.unsqueeze(0)
-        predict = self.render_image(poses, downsample=2)
-        ref = nn.resize(ref, size=(self.img_h // 4, self.img_w // 4), mode='bilinear')
+        predict = self.render_image(poses, downsample)
+        ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
         with jt.no_grad():
             metric = {}
             predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
@@ -221,6 +244,17 @@ class Trainer:
                     _img = (_img * 255).astype(np.uint8)
                     cv.imwrite(f"{save_dir}/test_{idx}.png", _img)
             return metric
+
+    def run_testset(self, save_path, skip, downsample=2):
+        self.model.eval()
+        if self.model_fine is not None:
+            self.model_fine.eval()
+        os.makedirs(save_path, exist_ok=True)
+        test_id = self.loaded_data['i_split'][2][::skip]
+        test_pose = self.loaded_data['poses'][test_id]
+        ref_images = self.loaded_data['imgs'][test_id]
+        metric = self.test(test_pose, ref_images, True, True, False, save_path, downsample)
+        print("Test: ", metric)
 
     def train(self):
         N_sample = self.cfg['rendering']['N_samples']
@@ -320,17 +354,8 @@ class Trainer:
             jt.gc()
 
             if it % self.cfg['training']['i_testset'] == 0:
-                self.model.eval()
-                if self.model_fine is not None:
-                    self.model_fine.eval()
                 test_save = os.path.join(self.exp_path, 'result', f"test_{it}")
-                os.makedirs(test_save, exist_ok=True)
-                step = 8 if it > 0 else 50
-                test_id = self.loaded_data['i_split'][2][::step]
-                test_pose = self.loaded_data['poses'][test_id]
-                ref_images = self.loaded_data['imgs'][test_id]
-                metric = self.test(test_pose, ref_images, True, True, False, test_save)
-                print("Test: ", metric)
+                self.run_testset(test_save, 8 if it > 0 else 50, 2)
                 self.model.train()
                 if self.model_fine is not None:
                     self.model_fine.train()
@@ -350,5 +375,7 @@ if __name__=='__main__':
     # jt.flags.lazy_execution=0
     jt.set_global_seed(0)
     train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
+    train_cfg["training"]["ckpt"] = "logs/lego_ent256/ckpt"
     trainer = Trainer(train_cfg)
-    trainer.train()
+    # trainer.train()
+    trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
