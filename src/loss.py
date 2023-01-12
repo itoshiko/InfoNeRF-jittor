@@ -3,11 +3,11 @@ import jittor as jt
 import jittor.nn as nn
 
 from jt_ssim import ssim, ms_ssim
-
+from jt_lpips import LPIPS
 
 # Misc
 img2mse = lambda x, y : jt.mean((x - y) ** 2)
-mse2psnr = lambda x : -10. * jt.log(x) / jt.log(jt.Tensor([10.]))
+mse2psnr = lambda x : -10. * jt.log(x) / jt.log(jt.Var([10.]))
 to8b = lambda x : (255 * np.clip(x, 0, 1)).astype(np.uint8)
 
 def img2psnr_redefine(x, y):
@@ -43,17 +43,18 @@ def img2psnr_mask(x, y, mask):
     psnr = jt.mean(jt.stack(psnrs))
     return psnr
 
-def img2ssim(x,y, mask=None):
+def img2ssim(x, y, mask=None):
     if mask is not None:
         x = mask.unsqueeze(-1)*x
         y = mask.unsqueeze(-1)*y
      
-    x = x.permute(0,3,1,2)
-    y = y.permute(0,3,1,2)
-    ssim_ = ssim(x,y, data_range=1)
-    ms_ssim_ = ms_ssim(x,y, data_range=1)
+    ssim_ = ssim(x, y, data_range=1)
+    ms_ssim_ = ms_ssim(x, y, data_range=1)
     return ssim_, ms_ssim_
 
+def img2lpips(x, y, net='vgg'):
+    loss_fn = LPIPS(net=net, spatial=False)
+    return loss_fn.execute(x, y)
 
 ######################################################
 #           Ray Entropy Minimization Loss            #
@@ -92,7 +93,7 @@ class EntropyLoss:
         entropy_ray_loss = jt.sum(entropy_ray, -1)
         
         # masking no hitting poisition?
-        mask = (acc > self.threshold).detach()
+        mask = (acc > self.threshold).stop_grad()
         entropy_ray_loss*= mask
         if self.entropy_log_scaling:
             return jt.log(jt.mean(entropy_ray_loss) + 1e-10)
@@ -147,7 +148,9 @@ class SmoothingLoss:
             p = nn.softmax(sigma_1, -1)
             q = nn.softmax(sigma_2, -1)
         elif self.smoothing_activation == 'norm':
-            p = sigma_1 / (jt.sum(sigma_1, -1,  keepdims=True) + 1e-10) + 1e-10
+            p = sigma_1 / (jt.sum(sigma_1, -1, keepdims=True) + 1e-10) + 1e-10
             q = sigma_2 / (jt.sum(sigma_2, -1, keepdims=True) + 1e-10) + 1e-10
         loss = self.criterion(p.log(), q)
+        # pointwise =  q * (q.log() - p.log())
+        # return jt.sum(pointwise) / pointwise.shape[0]
         return loss

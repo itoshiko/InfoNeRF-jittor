@@ -108,3 +108,19 @@ def create_nerf(cfg):
 
     return model, model_fine, embed_fn, embeddirs_fn
 
+
+def debug_rays(pts, obj_path='./logs/debug/ray_pts.obj'):
+    N_rays, N_samples, _ = pts.shape
+    pts = pts.numpy()
+    with open(obj_path, 'w')as f:
+        for i in range(N_rays):
+            if i < 1024:
+                color = (1., 0., 0.)
+            elif i < 2048:
+                color = (0., 1., 0.)
+            elif i < 3072:
+                color = (0., 0., 1.)
+            else:
+                color = (1., 1., 0.)
+            for j in range(N_samples):
+                f.write(f"v {pts[i, j, 0]} {pts[i, j, 1]} {pts[i, j, 2]} {color[0]} {color[1]} {color[2]}\n")

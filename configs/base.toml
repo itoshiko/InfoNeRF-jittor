@@ -14,9 +14,10 @@ basedir = "./logs/"
     netwidth_fine = 256
     N_rand = 4096
     lr = 5e-4
-    lr_decay = 250
+    lr_decay = 250000
     chunk = 32768
     netchunk = 65536
+    evalchunk = 65536
     ckpt = ""
 
     i_print = 100

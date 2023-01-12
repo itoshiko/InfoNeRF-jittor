@@ -34,7 +34,7 @@ def get_rays(H, W, focal, c2w, padding=None):
     # transform to camera coordinate
     dirs = jt.stack([(i-W*.5)/focal, -(j-H*.5)/focal, -jt.ones_like(i)], -1)  # [H, W, 3]
     # Rotate ray directions from camera frame to the world frame
-    rays_d = jt.matmul(dirs, c2w[:3, :3])
+    rays_d =  dirs @ jt.transpose(c2w[:3, :3], (1, 0))
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = c2w[:3, -1].repeat((H, W, 1))  # [H, W, 3]
     return rays_o, rays_d
@@ -98,7 +98,7 @@ def random_sample_ray(H, W, focal, c2w, cnt, pix_coord=None, center_crop=1.0):
 
     dirs = jt.stack([(sample_x-W*.5)/focal, -(sample_y-H*.5)/focal, -jt.ones_like(sample_x)], -1)  # [N, 3]
     # Rotate ray directions from camera frame to the world frame
-    rays_d = jt.matmul(dirs, c2w[:3, :3])
+    rays_d = jt.matmul(dirs, jt.transpose(c2w[:3, :3], (1, 0)))
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = c2w[:3, -1].unsqueeze(0).repeat((dirs.shape[0], 1))  # [N, 3]
     return rays_o, rays_d, pix_coord
@@ -139,7 +139,7 @@ def sample_pdf(bins, weights, N_samples, det=False):
         u = jt.rand(list(cdf.shape[:-1]) + [N_samples])
 
     # Invert CDF
-    u = u.contiguous()
+    # u = u.contiguous()
     inds = jt.searchsorted(cdf, u, right=True)
     below = jt.maximum(jt.zeros_like(inds-1), inds-1)
     above = jt.minimum((cdf.shape[-1]-1) * jt.ones_like(inds), inds)
@@ -159,8 +159,12 @@ def sample_pdf(bins, weights, N_samples, det=False):
     return samples
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False,
-               out_alpha=False, out_sigma=False, out_dist=False):
+def raw2alpha(raw, dists, act_fn=nn.relu):
+    return 1. - jt.exp(-act_fn(raw) * dists)
+
+
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0., white_bkgd=False,
+               out_alpha=False, out_sigma=False, out_dist=False, debug_save=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -172,9 +176,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False,
         acc_map: [num_rays]. Sum of weights along each ray.
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
-    """
-    raw2alpha = lambda raw, dists, act_fn=nn.relu: 1. - jt.exp(-act_fn(raw) * dists)
-    
+    """    
     # distance between sample points
     dists = z_vals[..., 1:] - z_vals[..., :-1] 
     dists = jt.concat([dists, jt.expand(jt.array([1e10]), dists[..., :1].shape)], -1)  # [N_rays, N_samples]
@@ -222,9 +224,7 @@ def sample_sigma(rays_o, rays_d, viewdirs, network, z_vals, network_query):
 
 
 def generate_pts(rays_o, rays_d, near, far, N_samples, lindisp=False, perturb=False):
-    N_rays = rays_o.shape[0]
     near, far = near * jt.ones_like(rays_d[..., :1]), far * jt.ones_like(rays_d[..., :1])
-    rays = jt.concat([rays_o, rays_d, near, far], -1) # B x 8
 
     t_vals = jt.linspace(0., 1., steps=N_samples)
     if not lindisp:

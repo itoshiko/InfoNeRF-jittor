@@ -3,7 +3,8 @@ import numpy as np
 import time
 import jittor as jt
 import jittor.nn as nn
-from tqdm import tqdm, trange
+from tqdm import tqdm
+import cv2 as cv
 
 from config import load_config
 from dataset.load_blender import load_blender_data_ex
@@ -31,13 +32,20 @@ class Trainer:
         op_param = list(self.model.parameters()) + (list(self.model_fine.parameters()) if self.model_fine is not None else [])
         self.optimizer = jt.optim.Adam(params=op_param, lr=self.cfg['training']['lr'], betas=(0.9, 0.999))
         self.it_time = 0
+        if self.cfg['training']['ckpt'] != "":
+            self.model.load(os.path.join(self.cfg['training']['ckpt'], "model.pkl"))
+            print("Load model parameters")
+            if self.model_fine is not None:
+                self.model_fine.load(os.path.join(self.cfg['training']['ckpt'], "model_fine.pkl"))
+                print("Load fine model parameters")
 
     def init_loss(self):
         if self.cfg['entropy_loss']['use']:
             self.loss_fn['ent'] = lfn.EntropyLoss(self.cfg['entropy_loss'])
         if self.cfg['info_loss']['use']:
             self.loss_fn['kl_smooth'] = lfn.SmoothingLoss(self.cfg['info_loss'])
-        self.loss_fn['img_loss'] = lfn.img2mse
+            self.info_lambda = self.cfg['info_loss']['info_lambda']
+        self.loss_fn['img_loss'] = nn.MSELoss()
 
     def gen_train_data(self):
         sample_info_gain = self.cfg['info_loss']['use']
@@ -56,15 +64,8 @@ class Trainer:
         rays_o, rays_d, coord = ru.random_sample_ray(
             self.img_h, self.img_w, self.focal, rgb_pose, 
             self.cfg['training']['N_rand'], center_crop=_crop)
-        # sample ground truth RGB
-        coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
-        coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
-        target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
-        target_rgb = target_rgb.squeeze(0).squeeze(-2)
-        target_rgb = target_rgb.permute(1, 0)  # [N_rand, 3]
-        coord = coord.squeeze(0).squeeze(0)
         
-        loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d, 'target_rgb': target_rgb})
+        loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d})
 
         # sample rays for information gain reduction loss
         if sample_info_gain:
@@ -80,6 +81,14 @@ class Trainer:
                     self.img_h, self.img_w, self.focal, rgb_pose, 
                     coord, self.cfg['info_loss']['pixel_range'])
             loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
+
+        # sample ground truth RGB
+        coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
+        coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
+        target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
+        target_rgb = target_rgb.squeeze(0).squeeze(-2)
+        target_rgb = target_rgb.permute(1, 0)  # [N_rand, 3]
+        loaded_ray.update({'target_rgb': target_rgb})
 
         # Sampling for unseen rays
         if sample_entropy:
@@ -113,7 +122,7 @@ class Trainer:
         """Volumetric rendering for rays
         """
         result = {}
-        # calculate samplr points along rays
+        # calculate sample points along rays
         near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
         pts, z_vals = ru.generate_pts(
             rays_o, rays_d, near, far, N_samples, 
@@ -126,22 +135,22 @@ class Trainer:
             view_dirs = None
         raw_out = nf.run_network(
             pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn, 
-            self.cfg['training']['netchunk'])
+            self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
         decoded_out = ru.raw2outputs(
             raw_out, z_vals, rays_d, 
-            self.cfg['rendering']['raw_noise_std'], self.cfg['dataset']['white_bkgd'],
+            self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+            self.cfg['dataset']['white_bkgd'],
             out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
         result.update({'coarse': decoded_out})
 
         if N_importance > 0:
-            with jt.no_grad():
-                weights = decoded_out['weights']
-                z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-                z_samples = ru.sample_pdf(
-                    z_vals_mid, weights[...,1:-1], N_importance, 
-                    det=((not eval) and (self.cfg['rendering']['perturb'])))
-                z_samples = z_samples.detach()
-                _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
+            weights = decoded_out['weights']
+            z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+            z_samples = ru.sample_pdf(
+                z_vals_mid, weights[...,1:-1], N_importance, 
+                det=((not eval) and (self.cfg['rendering']['perturb'])))
+            z_samples = z_samples.stop_grad()
+            _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
             
             # [N_rays, N_samples + N_importance, 3]
             pts_re = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_re[..., :, None]
@@ -152,23 +161,77 @@ class Trainer:
                 pts_re, view_dirs_re, 
                 self.model_fine if self.model_fine is not None else self.model, 
                 self.embed_fn, self.embeddirs_fn, 
-                self.cfg['training']['netchunk'])
+                self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
             decoded_out_re = ru.raw2outputs(
                 raw_re, z_vals_re, rays_d, 
-                self.cfg['rendering']['raw_noise_std'], self.cfg['dataset']['white_bkgd'],
+                self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+                self.cfg['dataset']['white_bkgd'],
                 out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
             result.update({'fine': decoded_out_re})
 
         return result
+
+    def render_image(self, poses, downsample=0):
+        with jt.no_grad():
+            n_views = poses.shape[0]
+            render = []
+            if downsample != 0:
+                render_h = self.img_h // (2 ** downsample)
+                render_w = self.img_w // (2 ** downsample)
+            else:
+                render_h, render_w = self.img_h, self.img_w
+            focal = self.focal * render_h / self.img_h
+            for vid in tqdm(range(n_views)):
+                pose = poses[vid]
+                rays_o, rays_d = ru.get_rays(render_h, render_w, focal, pose)
+                rays_o = rays_o.reshape((render_h * render_w, -1))
+                rays_d = rays_d.reshape((render_h * render_w, -1))
+                render_out = self.render_rays(
+                    rays_o, rays_d, self.cfg['rendering']['N_samples'], 
+                    self.cfg['rendering']['N_importance'], True)
+                render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
+                rgb = render_result['rgb_map']  # [h * w, 3]
+                rgb = rgb.reshape((render_h, render_w, 3))
+                render.append(rgb.permute(2, 0, 1))  # [3, h, w]
+            return render
+    
+    def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None):
+        if poses.ndim == 2:
+            poses = poses.unsqueeze(0)
+        predict = self.render_image(poses, downsample=2)
+        ref = nn.resize(ref, size=(self.img_h // 4, self.img_w // 4), mode='bilinear')
+        with jt.no_grad():
+            metric = {}
+            predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
+            if ref is not None and test_psnr:
+                psnr_avg = lfn.img2psnr_redefine(predict, ref)
+                metric['psnr'] = psnr_avg.item()
+            if ref is not None and test_ssim:
+                ssim, ms_ssim = lfn.img2ssim(predict, ref)
+                metric['ssim'] = ssim.item()
+                metric['ms_ssim'] = ms_ssim.item()
+            if ref is not None and test_lpips:
+                lpips = lfn.img2lpips(predict, ref)
+                metric['lpips_vgg'] = lpips.item()
+            if save_dir is not None:
+                predict = predict.permute(0, 2, 3, 1).detach().numpy()
+                for idx in range(predict.shape[0]):
+                    _img = predict[idx]
+                    _img = np.clip(_img, 0., 1.)
+                    _img = (_img * 255).astype(np.uint8)
+                    cv.imwrite(f"{save_dir}/test_{idx}.png", _img)
+            return metric
 
     def train(self):
         N_sample = self.cfg['rendering']['N_samples']
         N_refine = self.cfg['rendering']['N_importance']
         N_rays = self.cfg['training']['N_rand']
         N_entropy = self.cfg['entropy_loss']['N_entropy']
-        for it in tqdm(range(self.cfg['training']['N_iters'])):
+        self.model.train()
+        if self.model_fine is not None:
+            self.model_fine.train()
+        for it in range(self.cfg['training']['N_iters']):
             self.it_time = it
-            self.optimizer.zero_grad()
             train_data = self.gen_train_data()
             all_rays_o = []
             all_rays_d = []
@@ -196,7 +259,7 @@ class Trainer:
                 img_loss_fine = self.loss_fn['img_loss'](gt_rgb, predict_rgb_fine)
                 loss_dict['img_loss_fine'] = img_loss_fine.item()
                 total_loss += img_loss_fine
-            
+
             # Ray Entropy Minimiation Loss
             ent_iter = (it < self.cfg['entropy_loss']['entropy_end_iter']) if self.cfg['entropy_loss']['entropy_end_iter'] > 0 else True
             if self.cfg['entropy_loss']['use'] and ent_iter:
@@ -231,23 +294,60 @@ class Trainer:
             if self.cfg['info_loss']['use'] and info_iter:
                 alpha_raw = render_out['fine']['alpha'] \
                     if 'fine' in render_out else render_out['coarse']['alpha']
-                info_loss = self.loss_fn['kl_smooth'](alpha_raw[:N_rays], alpha_raw[N_rays:2*N_rays])
                 if self.cfg['entropy_loss']['use']:
-                    info_loss += self.loss_fn['kl_smooth'](alpha_raw[2*N_rays:2*N_rays+N_entropy], alpha_raw[2*N_rays+N_entropy:])
+                    alpha_1 = jt.concat([alpha_raw[:N_rays], alpha_raw[2*N_rays:2*N_rays+N_entropy]], dim=0)
+                    alpha_2 = jt.concat([alpha_raw[N_rays:2*N_rays], alpha_raw[2*N_rays+N_entropy:]], dim=0)
+                    info_loss = self.loss_fn['kl_smooth'](alpha_1, alpha_2)
+                else:
+                    info_loss = self.loss_fn['kl_smooth'](alpha_raw[:N_rays], alpha_raw[N_rays:2*N_rays])
                 loss_dict['KL_loss'] = info_loss.item()
-                total_loss += self.cfg['info_loss']['info_lambda'] * info_loss
-                
+                total_loss += self.info_lambda * info_loss
+            loss_dict.update({"loss": total_loss.item()})
+            jt.sync_all(True)
             self.optimizer.step(total_loss)
-            if it % 100 == 99:
-                print(loss_dict)
-        
-        jt.save(self.model.state_dict(), os.path.join(self.exp_path, 'ckpt', 'model.pth'))
-        if self.model_fine is not None:
-            jt.save(self.model.state_dict(), os.path.join(self.exp_path, 'ckpt', 'model_fine.pth'))
+
+            # update learning rate
+            new_lr = lr=self.cfg['training']['lr'] * (0.1 ** (it / self.cfg['training']['lr_decay']))
+            self.optimizer.lr = new_lr
+
+            # adjust lambda of Infomation Gain Reduction Loss
+            if it > 0 and it % self.cfg['info_loss']['reduce_step_size'] == 0 and self.cfg['info_loss']['use']:
+                self.info_lambda *= self.cfg['info_loss']['reduce_step_rate']
+            
+            if it % self.cfg['training']['i_print'] == 0 and it > 0:
+                print(f"ITER {it}", loss_dict)
+            jt.sync_all(True)
+            jt.gc()
+
+            if it % self.cfg['training']['i_testset'] == 0:
+                self.model.eval()
+                if self.model_fine is not None:
+                    self.model_fine.eval()
+                test_save = os.path.join(self.exp_path, 'result', f"test_{it}")
+                os.makedirs(test_save, exist_ok=True)
+                step = 8 if it > 0 else 50
+                test_id = self.loaded_data['i_split'][2][::step]
+                test_pose = self.loaded_data['poses'][test_id]
+                ref_images = self.loaded_data['imgs'][test_id]
+                metric = self.test(test_pose, ref_images, True, True, False, test_save)
+                print("Test: ", metric)
+                self.model.train()
+                if self.model_fine is not None:
+                    self.model_fine.train()
+
+            if it % self.cfg['training']['i_weights'] == 0 and it > 0:
+                print("Save ckpt")
+                self.model.save(os.path.join(self.exp_path, 'ckpt', f"model{it}.pkl"))
+                if self.model_fine is not None:
+                    self.model_fine.save(os.path.join(self.exp_path, 'ckpt', f"model_fine{it}.pkl"))
 
 
 if __name__=='__main__':
     jt.flags.use_cuda = 1
+    jt.flags.use_tensorcore = 1
+    # os.environ['JT_CHECK_NAN'] = "1"
+    # jt.flags.trace_py_var = 3
+    # jt.flags.lazy_execution=0
     jt.set_global_seed(0)
     train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
     trainer = Trainer(train_cfg)

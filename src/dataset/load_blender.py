@@ -61,7 +61,7 @@ def load_blender_data(basedir, half_res=False, testskip=1):
         all_imgs.append(imgs)
         all_poses.append(poses)
     
-    i_split = [np.arange(counts[i], counts[i+1]) for i in range(3)]
+    i_split = [list(np.arange(counts[i], counts[i+1])) for i in range(3)]
     
     imgs = np.concatenate(all_imgs, 0)
     poses = np.concatenate(all_poses, 0)
@@ -96,6 +96,15 @@ def load_blender_data(basedir, half_res=False, testskip=1):
 
 def load_blender_data_ex(args):
     assert 'datadir' in args
+    load_from_cache = ('load_cache' not in args) or (not args['load_cache'])
+    if os.path.exists(os.path.join(args['datadir'], 'cache.bin')) and load_from_cache:
+        print("Load from cache.")
+        raw_data =  jt.load(os.path.join(args['datadir'], 'cache.bin'))
+        for k in raw_data.keys():
+            if isinstance(raw_data[k], np.ndarray):
+                raw_data[k] = jt.array(raw_data[k])
+        return raw_data
+
     load_arg = {'basedir': args['datadir']}
     if 'half_res' in args:
         load_arg['half_res'] = args['half_res']
@@ -126,7 +135,8 @@ def load_blender_data_ex(args):
         if isinstance(raw_data[k], np.ndarray):
             raw_data[k] = jt.array(raw_data[k])
     raw_data['imgs'] = raw_data['imgs'].permute(0, 3, 1, 2)
-    
+    jt.save(raw_data, os.path.join(args['datadir'], 'cache.bin'))
+    print("Data cached.")
     return raw_data
 
 

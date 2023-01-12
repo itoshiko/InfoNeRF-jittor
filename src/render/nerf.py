@@ -138,7 +138,8 @@ class NeRF(nn.Module):
             input_views = x[..., self.input_ch:]
         h = input_pts
         for i, _ in enumerate(self.pts_linears):
-            h = nn.relu(self.pts_linears[i](h))
+            h = self.pts_linears[i](h)
+            h = nn.relu(h)
             if i in self.skips:
                 h = jt.concat([input_pts, h], dim=-1)
 
@@ -148,14 +149,15 @@ class NeRF(nn.Module):
             h = jt.concat([feature, input_views], -1)
         
             for _layer in self.views_linears:
-                h = nn.relu(_layer(h))
+                h = _layer(h)
+                h = nn.relu(h)
 
             rgb = self.rgb_linear(h)
             outputs = jt.concat([rgb, alpha], dim=-1)
         else:
             outputs = self.output_linear(h)
 
-        return outputs    
+        return outputs 
 
 
 class NeRF_RGB(nn.Module):
@@ -215,7 +217,7 @@ class NeRF_RGB(nn.Module):
         else:
             outputs = self.output_linear(h)
 
-        return outputs    
+        return outputs
 
 
 if __name__ == '__main__':

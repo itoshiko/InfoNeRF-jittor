@@ -1,4 +1,4 @@
-expname = "lego"
+expname = "lego_ent256"
 basedir = "./logs/"
 
 [dataset]
@@ -6,14 +6,17 @@ basedir = "./logs/"
     white_bkgd = true
 
 [training]
-  chunk = 8192
-  lr_decay = 500
-  N_rand = 1024
+  lr_decay = 250000
+  N_rand = 256
   N_iters = 50002
-  precrop_iters = 500
+  netchunk = 196608
+  precrop_iters = 1500
   precrop_frac = 0.5
   fewshot = 4
   train_scene = [26, 86, 2, 55]
+
+  i_testset = 5000
+  # ckpt = "./logs/lego_naive/ckpt"
  
 [rendering]
   use_viewdirs = true
@@ -23,6 +26,20 @@ basedir = "./logs/"
   far = 6.0
 
 [entropy_loss]
-    use = true
-    N_entropy = 1024
-    entropy_ray_zvals_lambda = 1e-3
+  use = true
+  N_entropy = 256
+  entropy_ray_zvals_lambda = 1e-3
+  entropy_end_iter = -1
+
+[info_loss]
+  use = false
+  sampling_method = 'near_pose'
+  near_c2w_type = 'rot_from_origin'
+  near_c2w_rot = 3.0
+  near_c2w_trans = 0.05
+  pixel_range = 16
+  info_lambda = 0.5
+  activation = 'norm'
+  reduce_step_size = 5000
+  reduce_step_rate = 0.5
+  info_end_iter = -1

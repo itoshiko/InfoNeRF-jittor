@@ -75,8 +75,6 @@ def _ssim(X, Y, data_range, win, size_average=True, K=(0.01, 0.03)):
     C1 = (K1 * data_range) ** 2
     C2 = (K2 * data_range) ** 2
 
-    win = win.to(X.device, dtype=X.dtype)
-
     mu1 = gaussian_filter(X, win)
     mu2 = gaussian_filter(Y, win)
 
@@ -125,15 +123,15 @@ def ssim(
     if not X.shape == Y.shape:
         raise ValueError(f"Input images should have the same dimensions, but got {X.shape} and {Y.shape}.")
 
-    for d in range(len(X.shape) - 1, 1, -1):
-        X = X.squeeze(dim=d)
-        Y = Y.squeeze(dim=d)
+    # for d in range(len(X.shape) - 1, 1, -1):
+    #     X = X.squeeze(dim=d)
+    #     Y = Y.squeeze(dim=d)
 
     if len(X.shape) not in (4, 5):
         raise ValueError(f"Input images should be 4-d or 5-d tensors, but got {X.shape}")
 
-    if not X.type() == Y.type():
-        raise ValueError(f"Input images should have the same dtype, but got {X.type()} and {Y.type()}.")
+    if not X.dtype == Y.dtype:
+        raise ValueError(f"Input images should have the same dtype, but got {X.dtype} and {Y.dtype}.")
 
     if win is not None:  # set win_size
         win_size = win.shape[-1]
@@ -180,12 +178,12 @@ def ms_ssim(
     if not X.shape == Y.shape:
         raise ValueError(f"Input images should have the same dimensions, but got {X.shape} and {Y.shape}.")
 
-    for d in range(len(X.shape) - 1, 1, -1):
-        X = X.squeeze(dim=d)
-        Y = Y.squeeze(dim=d)
+    # for d in range(len(X.shape) - 1, 1, -1):
+    #     X = X.squeeze(dim=d)
+    #     Y = Y.squeeze(dim=d)
 
-    if not X.type() == Y.type():
-        raise ValueError(f"Input images should have the same dtype, but got {X.type()} and {Y.type()}.")
+    if not X.dtype == Y.dtype:
+        raise ValueError(f"Input images should have the same dtype, but got {X.dtype} and {Y.dtype}.")
 
     if len(X.shape) == 4:
         avg_pool = nn.avg_pool2d
@@ -207,7 +205,7 @@ def ms_ssim(
 
     if weights is None:
         weights = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
-    weights = X.new_tensor(weights)
+    weights = jt.array(weights)
 
     if win is None:
         win = _fspecial_gauss_1d(win_size, win_sigma)
@@ -220,7 +218,7 @@ def ms_ssim(
 
         if i < levels - 1:
             mcs.append(nn.relu(cs))
-            padding = [s % 2 for s in X.shape[2:]]
+            padding = tuple([s % 2 for s in X.shape[2:]])
             X = avg_pool(X, kernel_size=2, padding=padding)
             Y = avg_pool(Y, kernel_size=2, padding=padding)
 
