@@ -179,7 +179,7 @@ class Trainer:
 
         return result
 
-    def render_image(self, poses, downsample=0):
+    def render_image(self, poses, downsample=0, save_dir=None):
         with jt.no_grad():
             n_views = poses.shape[0]
             render = []
@@ -216,12 +216,17 @@ class Trainer:
                 image_rgb = jt.concat(group_output, 0)
                 image_rgb = image_rgb.reshape((render_h, render_w, 3))
                 render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
+                if save_dir is not None:
+                    predict = image_rgb.detach().numpy()
+                    _img = np.clip(predict, 0., 1.)
+                    _img = (_img * 255).astype(np.uint8)
+                    cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
             return render
     
     def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
         if poses.ndim == 2:
             poses = poses.unsqueeze(0)
-        predict = self.render_image(poses, downsample)
+        predict = self.render_image(poses, downsample, save_dir=save_dir)
         ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
         with jt.no_grad():
             metric = {}
@@ -236,16 +241,9 @@ class Trainer:
             if ref is not None and test_lpips:
                 lpips = lfn.img2lpips(predict, ref)
                 metric['lpips_vgg'] = lpips.item()
-            if save_dir is not None:
-                predict = predict.permute(0, 2, 3, 1).detach().numpy()
-                for idx in range(predict.shape[0]):
-                    _img = predict[idx]
-                    _img = np.clip(_img, 0., 1.)
-                    _img = (_img * 255).astype(np.uint8)
-                    cv.imwrite(f"{save_dir}/test_{idx}.png", _img)
             return metric
 
-    def run_testset(self, save_path, skip, downsample=2):
+    def run_testset(self, save_path, skip, downsample=2, no_metric=False):
         self.model.eval()
         if self.model_fine is not None:
             self.model_fine.eval()
@@ -253,7 +251,7 @@ class Trainer:
         test_id = self.loaded_data['i_split'][2][::skip]
         test_pose = self.loaded_data['poses'][test_id]
         ref_images = self.loaded_data['imgs'][test_id]
-        metric = self.test(test_pose, ref_images, True, True, False, save_path, downsample)
+        metric = self.test(test_pose, ref_images, not no_metric, not no_metric, not no_metric, save_path, downsample)
         print("Test: ", metric)
 
     def train(self):
@@ -367,6 +365,29 @@ class Trainer:
                     self.model_fine.save(os.path.join(self.exp_path, 'ckpt', f"model_fine{it}.pkl"))
 
 
+def render_video(ckpt_path):
+    train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
+    train_cfg["training"]["ckpt"] = ckpt_path
+    trainer = Trainer(train_cfg)
+    video_path = os.path.join(trainer.exp_path, 'video')
+    trainer.run_testset(video_path, 1, 0, no_metric=True)
+    fps = 24
+    size = (800, 800)
+    video = cv.VideoWriter(
+        os.path.join(video_path, "render.avi"), 
+        cv.VideoWriter_fourcc('I', '4', '2', '0'), fps, size)
+    
+    all_imgs = glob.glob(os.path.join(video_path, "*.png"))
+    for i in range(len(all_imgs)):
+        img = cv.imread(all_imgs[i])
+        video.write(img)
+    for i in range(len(all_imgs) - 2, -1, -1):
+        img = cv.imread(all_imgs[i])
+        video.write(img)
+    video.release()
+    print(f"Video saved.")
+
+
 if __name__=='__main__':
     jt.flags.use_cuda = 1
     jt.flags.use_tensorcore = 1
@@ -375,7 +396,8 @@ if __name__=='__main__':
     # jt.flags.lazy_execution=0
     jt.set_global_seed(0)
     train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
-    train_cfg["training"]["ckpt"] = "logs/lego_ent256/ckpt"
-    trainer = Trainer(train_cfg)
+    #train_cfg["training"]["ckpt"] = "logs/lego_ent256/ckpt"
+    # trainer = Trainer(train_cfg)
     # trainer.train()
-    trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
+    #trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
+    render_video("logs/lego_ent256/ckpt")
