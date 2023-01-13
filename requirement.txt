@@ -2,3 +2,4 @@ jittor
 tqdm
 opencv-python
 numpy
+toml
