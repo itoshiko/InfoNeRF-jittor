@@ -1,4 +1,4 @@
-expname = "lego_ent256"
+expname = "lego_ent"
 basedir = "./logs/"
 
 [dataset]

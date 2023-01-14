@@ -251,7 +251,7 @@ class Trainer:
         test_id = self.loaded_data['i_split'][2][::skip]
         test_pose = self.loaded_data['poses'][test_id]
         ref_images = self.loaded_data['imgs'][test_id]
-        metric = self.test(test_pose, ref_images, not no_metric, not no_metric, not no_metric, save_path, downsample)
+        metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
         print("Test: ", metric)
 
     def train(self):
@@ -374,15 +374,14 @@ def render_video(ckpt_path):
     fps = 24
     size = (800, 800)
     video = cv.VideoWriter(
-        os.path.join(video_path, "render.avi"), 
-        cv.VideoWriter_fourcc('I', '4', '2', '0'), fps, size)
+        os.path.join(video_path, "render.mp4"), 
+        cv.VideoWriter_fourcc('h', '2', '6', '4'), fps, size)
     
-    all_imgs = glob.glob(os.path.join(video_path, "*.png"))
-    for i in range(len(all_imgs)):
-        img = cv.imread(all_imgs[i])
+    for i in range(200):
+        img = cv.imread(os.path.join(video_path, f"test_{i}.png"))
         video.write(img)
-    for i in range(len(all_imgs) - 2, -1, -1):
-        img = cv.imread(all_imgs[i])
+    for i in range(198, -1, -1):
+        img = cv.imread(os.path.join(video_path, f"test_{i}.png"))
         video.write(img)
     video.release()
     print(f"Video saved.")
@@ -396,8 +395,8 @@ if __name__=='__main__':
     # jt.flags.lazy_execution=0
     jt.set_global_seed(0)
     train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
-    #train_cfg["training"]["ckpt"] = "logs/lego_ent256/ckpt"
-    # trainer = Trainer(train_cfg)
-    # trainer.train()
-    #trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
-    render_video("logs/lego_ent256/ckpt")
+    train_cfg["training"]["ckpt"] = "logs/lego_ent/ckpt"
+    trainer = Trainer(train_cfg)
+    trainer.train()
+    trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
+    render_video("logs/lego_ent/ckpt")
